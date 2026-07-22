@@ -149,10 +149,8 @@
     </div>
     <button type="button" id="renderFullDisc" style="display:block; margin:14px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Render full disc preview</button>
     <div class="hint" id="fullDiscStatus" style="text-align:center; margin-top:8px;"></div>
-    <div id="exportImageWrap">
-      <button type="button" id="exportDiscImage" style="display:block; margin:10px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Export full disc image (PNG)</button>
-      <div class="hint" id="exportImageStatus" style="text-align:center; margin-top:8px;"></div>
-    </div>
+    <button type="button" id="exportDiscImage" style="display:block; margin:10px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Export full disc image (PNG)</button>
+    <div class="hint" id="exportImageStatus" style="text-align:center; margin-top:8px;"></div>
   </fieldset>
 
   <fieldset>
@@ -1028,26 +1026,33 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const btn = document.getElementById('exportDiscImage');
     btn.disabled = true;
     try {
-      const N = Math.max(1, Math.min(parseInt(divisionsInput.value)||files.length, files.length));
-      if (N < 1 || files.length === 0){
-        exportImageStatus.textContent = 'Load a folder of frames first.';
-        return;
-      }
-      exportImageStatus.textContent = `Loading ${N} images…`;
-      const imgs = await ensureFullDiscImages();
-      const canvas = await renderFullDiscToCanvas(imgs, EXPORT_IMAGE_PX);
+      const blank = modeSelect.value === 'blank';
+      const canvas = blank
+        ? renderBlankDiscToCanvas(EXPORT_IMAGE_PX)
+        : await (async () => {
+            const N = Math.max(1, Math.min(parseInt(divisionsInput.value)||files.length, files.length));
+            if (N < 1 || files.length === 0){
+              exportImageStatus.textContent = 'Load a folder of frames first.';
+              return null;
+            }
+            exportImageStatus.textContent = `Loading ${N} images…`;
+            const imgs = await ensureFullDiscImages();
+            return renderFullDiscToCanvas(imgs, EXPORT_IMAGE_PX);
+          })();
+      if (!canvas) return;
+      const filename = blank ? 'phenakistoscope-blank-template.png' : 'phenakistoscope-disc.png';
       exportImageStatus.textContent = 'Encoding PNG…';
       await new Promise(resolve => {
         canvas.toBlob(blob => {
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
-          a.href = url; a.download = 'phenakistoscope-disc.png';
+          a.href = url; a.download = filename;
           a.click();
           URL.revokeObjectURL(url);
           resolve();
         }, 'image/png');
       });
-      exportImageStatus.textContent = `Done — ${EXPORT_IMAGE_PX}×${EXPORT_IMAGE_PX}px PNG, transparent background, saved as phenakistoscope-disc.png`;
+      exportImageStatus.textContent = `Done — ${EXPORT_IMAGE_PX}×${EXPORT_IMAGE_PX}px PNG, transparent background, saved as ${filename}`;
     } catch(err){
       exportImageStatus.textContent = 'Error: '+err.message;
       console.error(err);
@@ -1258,7 +1263,6 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   const ringFieldset = document.getElementById('ringFieldset');
   const ringRowsEl = document.getElementById('ringRows');
   const ringWarn = document.getElementById('ringWarning');
-  const exportImageWrap = document.getElementById('exportImageWrap');
   const MIN_RING_DIVISIONS = 8; // below this a phenakistoscope ring doesn't read correctly when spun
 
   let rings = [
@@ -1382,6 +1386,38 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     fullDiscStatus.textContent = `${layout.length} ring${layout.length===1?'':'s'} — divisions ${layout.map(r=>r.divisions).join(', ')} — ${(R*2).toFixed(1)}mm disc`;
   }
 
+  // full-resolution transparent-background PNG of the ring artwork alone --
+  // same purpose as renderFullDiscToCanvas for photo mode: something to
+  // upload to a spinning-disc simulator (e.g. phenaspin.com) and check the
+  // template actually reads correctly before committing to paper
+  function renderBlankDiscToCanvas(outPx){
+    const R = parseFloat(diamInput.value)/2 || 150;
+    const { layout, hubR } = ringLayout(R);
+    const scale = (outPx/2)/R;
+    const cx = outPx/2, cy = outPx/2;
+    const canvas = document.createElement('canvas');
+    canvas.width = outPx; canvas.height = outPx;
+    const ctx = canvas.getContext('2d');
+    function toCanvas(mmX, mmY){ return { x: cx + mmX*scale, y: cy - mmY*scale }; }
+
+    ctx.lineWidth = Math.max(1, outPx*0.0015);
+    ctx.strokeStyle = '#1a1d1f';
+    ctx.beginPath(); ctx.arc(cx, cy, R*scale, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, hubR*scale, 0, Math.PI*2); ctx.stroke();
+
+    layout.forEach(ring => {
+      ctx.beginPath(); ctx.arc(cx, cy, ring.outerR*scale, 0, Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx, cy, ring.innerR*scale, 0, Math.PI*2); ctx.stroke();
+      const step = 360/ring.divisions;
+      for (let k=0;k<ring.divisions;k++){
+        const p1 = polar(ring.innerR, k*step), p2 = polar(ring.outerR, k*step);
+        const c1 = toCanvas(p1.x,p1.y), c2 = toCanvas(p2.x,p2.y);
+        ctx.beginPath(); ctx.moveTo(c1.x,c1.y); ctx.lineTo(c2.x,c2.y); ctx.stroke();
+      }
+    });
+    return canvas;
+  }
+
   // largest even angular division of the disc that still fits the page --
   // same "fewest pieces first" logic as chooseGrouping, just not tied to any
   // one ring's own division count (each ring's lines land wherever they fall)
@@ -1401,6 +1437,19 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       return { pieceCount, spanDeg, bbox, useLandscape };
     }
     return null;
+  }
+
+  // a full circle needs BOTH paper dimensions >= its own diameter to print
+  // uncut -- no margin/orientation choice can get around that, so when the
+  // chosen paper needs >1 piece, tell the user which listed sizes would
+  // actually get them down to 1, rather than leaving them to guess by trial
+  function singlePiecePaperOptions(R, margin){
+    return Array.from(paperSel.options)
+      .filter(o => {
+        const g = chooseBlankGrouping(R, parseFloat(o.dataset.w), parseFloat(o.dataset.h), margin);
+        return g && g.pieceCount === 1;
+      })
+      .map(o => o.value);
   }
 
   function generateBlankTemplatePDF(){
@@ -1526,6 +1575,15 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     statusEl.textContent = `Done — ${P} page${P>1?'s':''}, ${layout.length} ring${layout.length===1?'':'s'} (${layout.map(r=>r.divisions).join('/')} divisions), ${diameter}mm disc, ${opt.value} ${useLandscape?'landscape':'portrait'}, saved as phenakistoscope-blank-template.pdf`;
 
     let planText = `ASSEMBLY\n${P>1 ? `Each page is one piece spanning ${pageSpanDeg.toFixed(1)}° of the disc — cut along the vertex/radii/arc lines. Seam ticks and "piece N" labels on the two straight edges of each page show which pieces glue together, and at what radius.` : `The whole disc is one piece on a single page — cut along the vertex/radii/arc lines. No gluing needed.`} Each piece is ${bbox.w.toFixed(0)}×${bbox.h.toFixed(0)}mm on the page, comfortably within ${opt.value}. Arrange all ${P} piece${P>1?'s':''} around a shared centre point, matching each vertex to that centre.\n\nRings, hub to rim: ${layout.map((r,i)=>`ring ${i+1} — ${r.divisions} divisions, ${r.innerR.toFixed(0)}–${r.outerR.toFixed(0)}mm`).join('; ')}.`;
+    if (P > 1){
+      // a whole flat circle needs both paper dimensions >= its diameter --
+      // no margin/orientation trick gets a disc bigger than the paper's
+      // short edge down to one piece, so only suggest sizes that actually work
+      const fits = singlePiecePaperOptions(R, margin).filter(v => v !== opt.value);
+      if (fits.length){
+        planText += `\n\nThis disc (${(R*2).toFixed(0)}mm across) needs a paper size at least that wide in both directions to print as a single uncut piece — ${opt.value} isn't quite big enough. It would fit as one piece on: ${fits.join(', ')}.`;
+      }
+    }
     if (truncated){
       planText += `\n\nWARNING: ring widths added up to more than the disc radius — one or more rings were truncated or dropped to fit within ${R.toFixed(0)}mm. Reduce widths, reduce the ring count, or increase the disc diameter if you need every ring at full width.`;
       planEl.classList.add('warn');
@@ -1540,10 +1598,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     photoFieldset1.style.display = blank ? 'none' : '';
     regFieldset.style.display = blank ? 'none' : (previewImg ? '' : 'none');
     ringFieldset.style.display = blank ? '' : 'none';
-    exportImageWrap.style.display = blank ? 'none' : '';
     discRendered = false;
     fdctx.clearRect(0,0,fullDiscCanvas.width,fullDiscCanvas.height);
     fullDiscStatus.textContent = '';
+    exportImageStatus.textContent = '';
     planEl.classList.remove('show','warn');
     statusEl.className = 'status'; statusEl.textContent = '';
     if (blank){
