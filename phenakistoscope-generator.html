@@ -47,7 +47,18 @@
   <h1>Phenakistoscope Generator<span>Disc layout — folder of frames to print-and-cut disc</span></h1>
   <p class="lede">Select a folder of numbered frames. This lays them radially around a spinning-disc animation, one wedge per printed page — cut each out and assemble around a shared registration point at the true disc centre. Runs entirely in this tab, nothing uploaded.</p>
 
-  <fieldset>
+  <div class="row" style="margin:0 0 20px;">
+    <div class="field">
+      <label for="mode">Template type</label>
+      <select id="mode">
+        <option value="photo" selected>Photo frames — one image per wedge</option>
+        <option value="blank">Blank ring template — concentric rings for hand-drawing</option>
+      </select>
+      <div class="hint">Blank mode skips the frames folder and prints guide rings and division lines only, no photos — each ring can have its own division count, for a disc that plays several different frame counts at once.</div>
+    </div>
+  </div>
+
+  <fieldset id="photoFieldset1">
     <legend>01 — Frames</legend>
     <div class="drop" id="drop">
       <input type="file" id="fileInput" webkitdirectory directory multiple accept="image/*">
@@ -62,6 +73,14 @@
         <div class="hint" id="divisionsHint">Uses the first N images in the folder, sorted by filename.</div>
       </div>
     </div>
+  </fieldset>
+
+  <fieldset id="ringFieldset" style="display:none;">
+    <legend>01 — Rings</legend>
+    <p class="sub" style="margin-top:0;">Each ring is its own concentric band, hub to rim, with its own division count and width. Rings stack in order, starting just outside the hub. 8 divisions is the practical minimum for a phenakistoscope to read correctly when spun — there's no fixed maximum.</p>
+    <div id="ringRows"></div>
+    <button type="button" id="addRing" style="display:block; margin-top:10px; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Add ring</button>
+    <div class="hint" id="ringWarning" style="margin-top:10px;"></div>
   </fieldset>
 
   <fieldset id="regFieldset" style="display:none;">
@@ -130,8 +149,10 @@
     </div>
     <button type="button" id="renderFullDisc" style="display:block; margin:14px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Render full disc preview</button>
     <div class="hint" id="fullDiscStatus" style="text-align:center; margin-top:8px;"></div>
-    <button type="button" id="exportDiscImage" style="display:block; margin:10px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Export full disc image (PNG)</button>
-    <div class="hint" id="exportImageStatus" style="text-align:center; margin-top:8px;"></div>
+    <div id="exportImageWrap">
+      <button type="button" id="exportDiscImage" style="display:block; margin:10px auto 0; padding:8px 16px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:12.5px;">Export full disc image (PNG)</button>
+      <div class="hint" id="exportImageStatus" style="text-align:center; margin-top:8px;"></div>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -923,9 +944,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const btn = document.getElementById('renderFullDisc');
     btn.disabled = true;
     try {
-      const imgs = await ensureFullDiscImages();
-      drawFullDisc(imgs);
-      discRendered = true;
+      if (modeSelect.value === 'blank'){
+        drawBlankFullDisc();
+        discRendered = true;
+      } else {
+        const imgs = await ensureFullDiscImages();
+        drawFullDisc(imgs);
+        discRendered = true;
+      }
     } catch(err){
       fullDiscStatus.textContent = 'Error: '+err.message;
     } finally {
@@ -937,7 +963,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   let discRedrawTimer = null;
   ['ringRadius','imageSize','rotOffset','diameter','borderEnabled','borderGap','slotOffset','zoom'].forEach(id=>{
     document.getElementById(id).addEventListener('input', () => {
-      if (!(discRendered && cachedDiscImages)) return;
+      if (modeSelect.value === 'blank' || !(discRendered && cachedDiscImages)) return;
       clearTimeout(discRedrawTimer);
       discRedrawTimer = setTimeout(() => drawFullDisc(cachedDiscImages), 150);
     });
@@ -1222,6 +1248,321 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     return transparent ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.9);
   }
 
+  // ---- blank ring template mode ------------------------------------------
+  // No photos: prints concentric guide rings for hand-drawing, each with its
+  // own division count and radial width, stacked hub to rim. Reuses the same
+  // wedge-piece/registration-mark PDF tiling as photo mode (polar, wedgeBBox,
+  // pagePt) since the print/cut/reassemble problem is identical either way.
+  const modeSelect = document.getElementById('mode');
+  const photoFieldset1 = document.getElementById('photoFieldset1');
+  const ringFieldset = document.getElementById('ringFieldset');
+  const ringRowsEl = document.getElementById('ringRows');
+  const ringWarn = document.getElementById('ringWarning');
+  const exportImageWrap = document.getElementById('exportImageWrap');
+  const MIN_RING_DIVISIONS = 8; // below this a phenakistoscope ring doesn't read correctly when spun
+
+  let rings = [
+    { divisions: 16, width: 20 },
+    { divisions: 14, width: 20 },
+    { divisions: 13, width: 20 }
+  ];
+
+  function renderRingRows(){
+    ringRowsEl.innerHTML = rings.map((r, i) => `
+      <div class="row" style="align-items:flex-end; margin-top:${i===0?0:14}px;">
+        <div class="field">
+          <label>Ring ${i+1} — divisions</label>
+          <input type="number" class="ring-divisions" data-idx="${i}" value="${r.divisions}" min="${MIN_RING_DIVISIONS}" step="1">
+        </div>
+        <div class="field">
+          <label>Ring ${i+1} — width (mm)</label>
+          <input type="number" class="ring-width" data-idx="${i}" value="${r.width}" min="1" step="1">
+        </div>
+        <div class="field" style="flex:0 0 auto; display:flex; align-items:flex-end;">
+          <button type="button" class="removeRing" data-idx="${i}" ${rings.length<=1?'disabled':''} style="padding:8px 12px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:${rings.length<=1?'default':'pointer'};">Remove</button>
+        </div>
+      </div>
+    `).join('');
+
+    ringRowsEl.querySelectorAll('.ring-divisions').forEach(el => {
+      el.addEventListener('input', () => {
+        rings[parseInt(el.dataset.idx)].divisions = Math.max(MIN_RING_DIVISIONS, parseInt(el.value)||MIN_RING_DIVISIONS);
+        updateRingWarning();
+        redrawBlankPreviewIfLive();
+      });
+    });
+    ringRowsEl.querySelectorAll('.ring-width').forEach(el => {
+      el.addEventListener('input', () => {
+        rings[parseInt(el.dataset.idx)].width = Math.max(1, parseFloat(el.value)||1);
+        updateRingWarning();
+        redrawBlankPreviewIfLive();
+      });
+    });
+    ringRowsEl.querySelectorAll('.removeRing').forEach(el => {
+      el.addEventListener('click', () => {
+        if (rings.length<=1) return;
+        rings.splice(parseInt(el.dataset.idx), 1);
+        renderRingRows();
+        updateRingWarning();
+        redrawBlankPreviewIfLive();
+      });
+    });
+  }
+
+  document.getElementById('addRing').addEventListener('click', () => {
+    const last = rings[rings.length-1];
+    rings.push({ divisions: last ? last.divisions : 16, width: last ? last.width : 20 });
+    renderRingRows();
+    updateRingWarning();
+    redrawBlankPreviewIfLive();
+  });
+
+  // stacks rings from the hub outward in list order; clamps the last ring
+  // that would overshoot the disc radius rather than drawing past the cut edge
+  function ringLayout(R){
+    const hubR = R*0.14;
+    let cursor = hubR, truncated = false;
+    const layout = [];
+    for (const r of rings){
+      if (cursor >= R){ truncated = true; break; }
+      const innerR = cursor;
+      let outerR = cursor + r.width;
+      if (outerR > R){ outerR = R; truncated = true; }
+      layout.push({ innerR, outerR, divisions: Math.max(MIN_RING_DIVISIONS, r.divisions|0) });
+      cursor = outerR;
+    }
+    return { layout, hubR, truncated };
+  }
+
+  function updateRingWarning(){
+    const R = parseFloat(diamInput.value)/2 || 150;
+    const { layout, truncated } = ringLayout(R);
+    if (truncated){
+      ringWarn.textContent = `⚠ Ring widths add up to more than the disc radius — later ring(s) truncated or dropped to fit within ${R.toFixed(0)}mm. Reduce widths, reduce the ring count, or increase the disc diameter.`;
+      ringWarn.style.color = '#a3392c';
+    } else {
+      const used = layout.length ? layout[layout.length-1].outerR : 0;
+      ringWarn.textContent = `${layout.length} ring${layout.length===1?'':'s'}, hub to outer edge ${used.toFixed(0)}mm of ${R.toFixed(0)}mm disc radius.`;
+      ringWarn.style.color = '#8a8478';
+    }
+  }
+
+  function redrawBlankPreviewIfLive(){
+    if (modeSelect.value === 'blank' && discRendered) drawBlankFullDisc();
+  }
+
+  function drawBlankFullDisc(){
+    const R = parseFloat(diamInput.value)/2 || 150;
+    const { layout, hubR } = ringLayout(R);
+    const canvasPx = 480, pad = 10;
+    const scale = (canvasPx/2 - pad)/R;
+    const cx = canvasPx/2, cy = canvasPx/2;
+    fullDiscCanvas.width = canvasPx; fullDiscCanvas.height = canvasPx;
+    fdctx.clearRect(0,0,canvasPx,canvasPx);
+    function toCanvas(mmX, mmY){ return { x: cx + mmX*scale, y: cy - mmY*scale }; }
+
+    fdctx.strokeStyle = '#1a1d1f'; fdctx.lineWidth = 1;
+    fdctx.beginPath(); fdctx.arc(cx, cy, R*scale, 0, Math.PI*2); fdctx.stroke();
+    fdctx.strokeStyle = '#c9c3b5'; fdctx.setLineDash([3,3]);
+    fdctx.beginPath(); fdctx.arc(cx, cy, hubR*scale, 0, Math.PI*2); fdctx.stroke();
+    fdctx.setLineDash([]);
+
+    layout.forEach(ring => {
+      fdctx.strokeStyle = '#1a1d1f'; fdctx.lineWidth = 1;
+      fdctx.beginPath(); fdctx.arc(cx, cy, ring.outerR*scale, 0, Math.PI*2); fdctx.stroke();
+      fdctx.beginPath(); fdctx.arc(cx, cy, ring.innerR*scale, 0, Math.PI*2); fdctx.stroke();
+      const step = 360/ring.divisions;
+      fdctx.strokeStyle = '#7a3b2e'; fdctx.lineWidth = 1;
+      for (let k=0;k<ring.divisions;k++){
+        const p1 = polar(ring.innerR, k*step), p2 = polar(ring.outerR, k*step);
+        const c1 = toCanvas(p1.x,p1.y), c2 = toCanvas(p2.x,p2.y);
+        fdctx.beginPath(); fdctx.moveTo(c1.x,c1.y); fdctx.lineTo(c2.x,c2.y); fdctx.stroke();
+      }
+    });
+    fullDiscStatus.textContent = `${layout.length} ring${layout.length===1?'':'s'} — divisions ${layout.map(r=>r.divisions).join(', ')} — ${(R*2).toFixed(1)}mm disc`;
+  }
+
+  // largest even angular division of the disc that still fits the page --
+  // same "fewest pieces first" logic as chooseGrouping, just not tied to any
+  // one ring's own division count (each ring's lines land wherever they fall)
+  function chooseBlankGrouping(R, paperWmm, paperHmm, margin){
+    const uw = paperWmm - 2*margin, uh = paperHmm - 2*margin;
+    for (let pieceCount=1; pieceCount<=360; pieceCount++){
+      if (360 % pieceCount !== 0) continue;
+      const spanDeg = 360/pieceCount;
+      const bbox = wedgeBBox(spanDeg, R);
+      const fitsNormal = bbox.w<=uw && bbox.h<=uh;
+      const fitsRotated = bbox.w<=uh && bbox.h<=uw;
+      if (!fitsNormal && !fitsRotated) continue;
+      const pieceIsWide = bbox.w >= bbox.h;
+      let useLandscape = pieceIsWide;
+      if (useLandscape && !fitsRotated) useLandscape = false;
+      if (!useLandscape && !fitsNormal) useLandscape = true;
+      return { pieceCount, spanDeg, bbox, useLandscape };
+    }
+    return null;
+  }
+
+  function generateBlankTemplatePDF(){
+    const diameter = parseFloat(diamInput.value);
+    const R = diameter/2;
+    const opt = paperSel.options[paperSel.selectedIndex];
+    const paperW = parseFloat(opt.dataset.w), paperH = parseFloat(opt.dataset.h);
+    const margin = parseFloat(marginInput.value);
+    const { layout, hubR, truncated } = ringLayout(R);
+
+    if (!layout.length){
+      statusEl.className='status err';
+      statusEl.textContent = 'No rings fit within the hub and disc radius — increase the diameter or reduce ring widths.';
+      return;
+    }
+
+    const grouping = chooseBlankGrouping(R, paperW, paperH, margin);
+    if (!grouping){
+      statusEl.className='status err';
+      statusEl.textContent = `Even the smallest even division of the disc doesn't fit ${opt.value}. Choose a larger paper size or reduce the diameter.`;
+      return;
+    }
+    const { pieceCount: P, spanDeg: pageSpanDeg, bbox, useLandscape } = grouping;
+
+    const vx = margin + 6 - bbox.minX, vy = margin + 6 - bbox.minY;
+    function toPage(localX, localY){ return { x: vx + localX, y: vy + localY }; }
+    function pagePt(r, deg){ return toPage(...Object.values(polar(r, deg))); }
+
+    const jspdfOpts = useLandscape
+      ? { unit:'mm', format: opt.value.toLowerCase(), orientation: 'landscape' }
+      : { unit:'mm', format: opt.value.toLowerCase(), orientation: 'portrait' };
+    const doc = new jsPDF(jspdfOpts);
+
+    const tickRadii = [hubR, ...layout.map(r=>r.innerR), ...layout.map(r=>r.outerR)].filter(r=>r>0 && r<=R);
+
+    for (let p=0; p<P; p++){
+      if (p>0) doc.addPage(opt.value.toLowerCase(), useLandscape ? 'landscape' : 'portrait');
+      const pieceStart = p*pageSpanDeg;
+      const steps = Math.max(40, Math.ceil(pageSpanDeg/2));
+
+      // outer piece boundary: vertex -> arc-start -> arc -> arc-end -> vertex
+      const v = toPage(0,0);
+      const arcStart = pagePt(R,0);
+      doc.setLineWidth(0.25);
+      doc.line(v.x, v.y, arcStart.x, arcStart.y);
+      let prev = arcStart;
+      for (let s=1;s<=steps;s++){
+        const pt = pagePt(R, pageSpanDeg*s/steps);
+        doc.line(prev.x, prev.y, pt.x, pt.y);
+        prev = pt;
+      }
+      doc.line(prev.x, prev.y, v.x, v.y);
+
+      // hub arc guide (short dashes)
+      doc.setLineWidth(0.15);
+      for (let s=0;s<steps;s+=2){
+        const p1 = pagePt(hubR, pageSpanDeg*s/steps), p2 = pagePt(hubR, pageSpanDeg*(s+0.7)/steps);
+        doc.line(p1.x,p1.y,p2.x,p2.y);
+      }
+
+      // registration crosshair at vertex (true disc centre)
+      doc.setLineWidth(0.2);
+      doc.line(v.x-3, v.y, v.x+3, v.y);
+      doc.line(v.x, v.y-3, v.x, v.y+3);
+
+      // each ring: its own inner/outer boundary arcs across this piece's
+      // span, plus its own division lines wherever they land within it --
+      // rings deliberately don't align with each other or the page seams
+      layout.forEach((ring, ri) => {
+        doc.setLineWidth(0.25);
+        [ring.innerR, ring.outerR].forEach(rad => {
+          if (rad<=0) return;
+          let prevArc = pagePt(rad, 0);
+          for (let s=1;s<=steps;s++){
+            const pt = pagePt(rad, pageSpanDeg*s/steps);
+            doc.line(prevArc.x, prevArc.y, pt.x, pt.y);
+            prevArc = pt;
+          }
+        });
+
+        doc.setLineWidth(0.15);
+        const step = 360/ring.divisions;
+        for (let k=0;k<ring.divisions;k++){
+          const ang = ((k*step - pieceStart) % 360 + 360) % 360;
+          if (ang > pageSpanDeg + 1e-6) continue;
+          const p1 = pagePt(ring.innerR, ang), p2 = pagePt(ring.outerR, ang);
+          doc.line(p1.x, p1.y, p2.x, p2.y);
+        }
+
+        doc.setFontSize(6.5);
+        const labelPt = pagePt((ring.innerR+ring.outerR)/2, Math.min(pageSpanDeg, 4));
+        doc.text(`ring ${ri+1} · ${ring.divisions}`, labelPt.x, labelPt.y);
+      });
+
+      // seam registration marks between neighbouring pieces
+      if (P > 1){
+        const tickHalfLenMM = 1.5;
+        const prevPieceNum = ((p-1+P)%P) + 1, nextPieceNum = (p+1)%P + 1;
+        [
+          { angle: 0, neighbour: prevPieceNum, inwardSign: 1 },
+          { angle: pageSpanDeg, neighbour: nextPieceNum, inwardSign: -1 }
+        ].forEach(edge => {
+          doc.setLineWidth(0.3);
+          tickRadii.forEach(rt => {
+            const base = pagePt(rt, edge.angle);
+            const perp = polar(tickHalfLenMM, edge.angle+90);
+            doc.line(base.x-perp.x, base.y-perp.y, base.x+perp.x, base.y+perp.y);
+          });
+          const labelBase = polar(R*0.9, edge.angle);
+          const labelPerp = polar(5, edge.angle+90);
+          const labelPtOuter = toPage(labelBase.x + edge.inwardSign*labelPerp.x, labelBase.y + edge.inwardSign*labelPerp.y);
+          doc.setFontSize(7);
+          doc.text(`↔ piece ${edge.neighbour}`, labelPtOuter.x, labelPtOuter.y, { align:'center' });
+        });
+      }
+
+      doc.setFontSize(9);
+      doc.text(`piece ${p+1} of ${P} — align vertex to disc centre`, margin, margin - 2 < 4 ? 6 : margin - 2);
+    }
+
+    doc.save('phenakistoscope-blank-template.pdf');
+    statusEl.className='status';
+    statusEl.textContent = `Done — ${P} page${P>1?'s':''}, ${layout.length} ring${layout.length===1?'':'s'} (${layout.map(r=>r.divisions).join('/')} divisions), ${diameter}mm disc, ${opt.value} ${useLandscape?'landscape':'portrait'}, saved as phenakistoscope-blank-template.pdf`;
+
+    let planText = `ASSEMBLY\n${P>1 ? `Each page is one piece spanning ${pageSpanDeg.toFixed(1)}° of the disc — cut along the vertex/radii/arc lines. Seam ticks and "piece N" labels on the two straight edges of each page show which pieces glue together, and at what radius.` : `The whole disc is one piece on a single page — cut along the vertex/radii/arc lines. No gluing needed.`} Each piece is ${bbox.w.toFixed(0)}×${bbox.h.toFixed(0)}mm on the page, comfortably within ${opt.value}. Arrange all ${P} piece${P>1?'s':''} around a shared centre point, matching each vertex to that centre.\n\nRings, hub to rim: ${layout.map((r,i)=>`ring ${i+1} — ${r.divisions} divisions, ${r.innerR.toFixed(0)}–${r.outerR.toFixed(0)}mm`).join('; ')}.`;
+    if (truncated){
+      planText += `\n\nWARNING: ring widths added up to more than the disc radius — one or more rings were truncated or dropped to fit within ${R.toFixed(0)}mm. Reduce widths, reduce the ring count, or increase the disc diameter if you need every ring at full width.`;
+      planEl.classList.add('warn');
+      statusEl.className='status warn';
+    }
+    planEl.textContent = planText;
+    planEl.classList.add('show');
+  }
+
+  modeSelect.addEventListener('change', () => {
+    const blank = modeSelect.value === 'blank';
+    photoFieldset1.style.display = blank ? 'none' : '';
+    regFieldset.style.display = blank ? 'none' : (previewImg ? '' : 'none');
+    ringFieldset.style.display = blank ? '' : 'none';
+    exportImageWrap.style.display = blank ? 'none' : '';
+    discRendered = false;
+    fdctx.clearRect(0,0,fullDiscCanvas.width,fullDiscCanvas.height);
+    fullDiscStatus.textContent = '';
+    planEl.classList.remove('show','warn');
+    statusEl.className = 'status'; statusEl.textContent = '';
+    if (blank){
+      goBtn.disabled = false;
+      goBtn.textContent = 'Generate blank ring template PDF';
+    } else if (files.length){
+      goBtn.disabled = false;
+      updateDivisionsHint();
+    } else {
+      goBtn.disabled = true;
+      goBtn.textContent = 'Select a folder first';
+    }
+    updateRingWarning();
+  });
+
+  diamInput.addEventListener('input', updateRingWarning);
+  renderRingRows();
+  updateRingWarning();
+
   goBtn.addEventListener('click', async () => {
     goBtn.disabled = true;
     planEl.classList.remove('show','warn');
@@ -1240,6 +1581,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const slotBetween = document.getElementById('slotOffset').value === 'between';
 
     try {
+      if (modeSelect.value === 'blank'){
+        generateBlankTemplatePDF();
+        return;
+      }
       statusEl.className='status';
       const frameAngleStep = 360/N;
 
