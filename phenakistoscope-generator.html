@@ -171,6 +171,8 @@
           <option value="Letter" data-w="215.9" data-h="279.4">US Letter</option>
           <option value="Tabloid" data-w="279.4" data-h="431.8">US Tabloid</option>
         </select>
+        <div class="hint" id="paperMaxHint"></div>
+        <button type="button" id="useMaxDiameter" style="margin-top:6px; padding:6px 10px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:pointer; font-size:11.5px;">Set diameter to this paper's max</button>
       </div>
       <div class="field">
         <label for="margin">Unprintable margin</label>
@@ -1635,8 +1637,48 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   });
 
   diamInput.addEventListener('input', updateRingWarning);
+  diamInput.addEventListener('input', redrawBlankPreviewIfLive);
   renderRingRows();
   updateRingWarning();
+
+  // ---- max single-piece size for the selected paper -----------------------
+  // a flat circle needs both paper dimensions >= its own diameter to print
+  // uncut, so the ceiling is simply the paper's shorter usable dimension --
+  // same fact chooseGrouping/chooseBlankGrouping already rely on, surfaced
+  // up front here instead of only after generating and hitting >1 page
+  const paperMaxHint = document.getElementById('paperMaxHint');
+  const useMaxDiameterBtn = document.getElementById('useMaxDiameter');
+
+  function maxSinglePieceDiameter(paperWmm, paperHmm, marginMm){
+    return Math.min(paperWmm, paperHmm) - 2*marginMm;
+  }
+
+  function updatePaperMaxHint(){
+    const opt = paperSel.options[paperSel.selectedIndex];
+    const paperW = parseFloat(opt.dataset.w), paperH = parseFloat(opt.dataset.h);
+    const margin = parseFloat(marginInput.value) || 0;
+    const maxD = maxSinglePieceDiameter(paperW, paperH, margin);
+    const diameter = parseFloat(diamInput.value) || 0;
+    const blank = modeSelect.value === 'blank';
+    const effective = blank ? ringLayout(diameter/2).outerContentR*2 : diameter;
+    const label = blank ? 'template' : 'disc';
+    const fits = effective <= maxD + 1e-6;
+    paperMaxHint.textContent = `Fits as a single uncut piece up to Ø${maxD.toFixed(0)}mm on ${opt.value} at this margin — current ${label} is Ø${effective.toFixed(0)}mm${fits ? ', fits on one page.' : ', needs more than one piece here.'}`;
+  }
+
+  useMaxDiameterBtn.addEventListener('click', () => {
+    const opt = paperSel.options[paperSel.selectedIndex];
+    const paperW = parseFloat(opt.dataset.w), paperH = parseFloat(opt.dataset.h);
+    const margin = parseFloat(marginInput.value) || 0;
+    diamInput.value = maxSinglePieceDiameter(paperW, paperH, margin).toFixed(1);
+    diamInput.dispatchEvent(new Event('input'));
+  });
+
+  paperSel.addEventListener('input', updatePaperMaxHint);
+  marginInput.addEventListener('input', updatePaperMaxHint);
+  diamInput.addEventListener('input', updatePaperMaxHint);
+  modeSelect.addEventListener('change', updatePaperMaxHint);
+  updatePaperMaxHint();
 
   goBtn.addEventListener('click', async () => {
     goBtn.disabled = true;
