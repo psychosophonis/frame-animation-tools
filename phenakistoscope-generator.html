@@ -1335,7 +1335,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       layout.push({ innerR, outerR, divisions: Math.max(MIN_RING_DIVISIONS, r.divisions|0) });
       cursor = outerR;
     }
-    return { layout, hubR, truncated };
+    // the actual outer edge of drawn content -- print/export/preview all
+    // crop to this, not the nominal disc radius, so the cut line never sits
+    // out past where the rings actually stop
+    const outerContentR = layout.length ? layout[layout.length-1].outerR : hubR;
+    return { layout, hubR, truncated, outerContentR };
   }
 
   function updateRingWarning(){
@@ -1357,16 +1361,18 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
   function drawBlankFullDisc(){
     const R = parseFloat(diamInput.value)/2 || 150;
-    const { layout, hubR } = ringLayout(R);
+    const { layout, hubR, outerContentR, truncated } = ringLayout(R);
     const canvasPx = 480, pad = 10;
-    const scale = (canvasPx/2 - pad)/R;
+    // frame tightly to the actual ring content, not the nominal disc radius --
+    // matches the cropped print/export output, no dead space beyond the rings
+    const scale = (canvasPx/2 - pad)/outerContentR;
     const cx = canvasPx/2, cy = canvasPx/2;
     fullDiscCanvas.width = canvasPx; fullDiscCanvas.height = canvasPx;
     fdctx.clearRect(0,0,canvasPx,canvasPx);
     function toCanvas(mmX, mmY){ return { x: cx + mmX*scale, y: cy - mmY*scale }; }
 
     fdctx.strokeStyle = '#1a1d1f'; fdctx.lineWidth = 1;
-    fdctx.beginPath(); fdctx.arc(cx, cy, R*scale, 0, Math.PI*2); fdctx.stroke();
+    fdctx.beginPath(); fdctx.arc(cx, cy, outerContentR*scale, 0, Math.PI*2); fdctx.stroke();
     fdctx.strokeStyle = '#c9c3b5'; fdctx.setLineDash([3,3]);
     fdctx.beginPath(); fdctx.arc(cx, cy, hubR*scale, 0, Math.PI*2); fdctx.stroke();
     fdctx.setLineDash([]);
@@ -1383,7 +1389,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         fdctx.beginPath(); fdctx.moveTo(c1.x,c1.y); fdctx.lineTo(c2.x,c2.y); fdctx.stroke();
       }
     });
-    fullDiscStatus.textContent = `${layout.length} ring${layout.length===1?'':'s'} — divisions ${layout.map(r=>r.divisions).join(', ')} — ${(R*2).toFixed(1)}mm disc`;
+    const sizeNote = truncated ? '' : ` (of ${(R*2).toFixed(1)}mm disc diameter)`;
+    fullDiscStatus.textContent = `${layout.length} ring${layout.length===1?'':'s'} — divisions ${layout.map(r=>r.divisions).join(', ')} — cropped to ${(outerContentR*2).toFixed(1)}mm${sizeNote}`;
   }
 
   // full-resolution transparent-background PNG of the ring artwork alone --
@@ -1392,8 +1399,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   // template actually reads correctly before committing to paper
   function renderBlankDiscToCanvas(outPx){
     const R = parseFloat(diamInput.value)/2 || 150;
-    const { layout, hubR } = ringLayout(R);
-    const scale = (outPx/2)/R;
+    const { layout, hubR, outerContentR } = ringLayout(R);
+    // frame tightly to the actual ring content, matching the cropped PDF --
+    // the exported PNG should be exactly what gets printed and cut
+    const scale = (outPx/2)/outerContentR;
     const cx = outPx/2, cy = outPx/2;
     const canvas = document.createElement('canvas');
     canvas.width = outPx; canvas.height = outPx;
@@ -1402,7 +1411,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
     ctx.lineWidth = Math.max(1, outPx*0.0015);
     ctx.strokeStyle = '#1a1d1f';
-    ctx.beginPath(); ctx.arc(cx, cy, R*scale, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, outerContentR*scale, 0, Math.PI*2); ctx.stroke();
     ctx.beginPath(); ctx.arc(cx, cy, hubR*scale, 0, Math.PI*2); ctx.stroke();
 
     layout.forEach(ring => {
@@ -1458,7 +1467,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const opt = paperSel.options[paperSel.selectedIndex];
     const paperW = parseFloat(opt.dataset.w), paperH = parseFloat(opt.dataset.h);
     const margin = parseFloat(marginInput.value);
-    const { layout, hubR, truncated } = ringLayout(R);
+    const { layout, hubR, truncated, outerContentR } = ringLayout(R);
 
     if (!layout.length){
       statusEl.className='status err';
@@ -1466,7 +1475,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       return;
     }
 
-    const grouping = chooseBlankGrouping(R, paperW, paperH, margin);
+    // the printed/cut boundary is cropped to outerContentR (where the rings
+    // actually end), not the nominal disc radius R -- otherwise the cut line
+    // sits out past the last ring with dead paper in between
+    const grouping = chooseBlankGrouping(outerContentR, paperW, paperH, margin);
     if (!grouping){
       statusEl.className='status err';
       statusEl.textContent = `Even the smallest even division of the disc doesn't fit ${opt.value}. Choose a larger paper size or reduce the diameter.`;
@@ -1483,21 +1495,23 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       : { unit:'mm', format: opt.value.toLowerCase(), orientation: 'portrait' };
     const doc = new jsPDF(jspdfOpts);
 
-    const tickRadii = [hubR, ...layout.map(r=>r.innerR), ...layout.map(r=>r.outerR)].filter(r=>r>0 && r<=R);
+    const tickRadii = [hubR, ...layout.map(r=>r.innerR), ...layout.map(r=>r.outerR)].filter(r=>r>0 && r<=outerContentR);
+    const ringSummary = layout.map(r=>r.divisions).join('/');
 
     for (let p=0; p<P; p++){
       if (p>0) doc.addPage(opt.value.toLowerCase(), useLandscape ? 'landscape' : 'portrait');
       const pieceStart = p*pageSpanDeg;
       const steps = Math.max(40, Math.ceil(pageSpanDeg/2));
 
-      // outer piece boundary: vertex -> arc-start -> arc -> arc-end -> vertex
+      // outer piece boundary: vertex -> arc-start -> arc -> arc-end -> vertex,
+      // at outerContentR -- the true cut edge, flush with the outermost ring
       const v = toPage(0,0);
-      const arcStart = pagePt(R,0);
+      const arcStart = pagePt(outerContentR,0);
       doc.setLineWidth(0.25);
       doc.line(v.x, v.y, arcStart.x, arcStart.y);
       let prev = arcStart;
       for (let s=1;s<=steps;s++){
-        const pt = pagePt(R, pageSpanDeg*s/steps);
+        const pt = pagePt(outerContentR, pageSpanDeg*s/steps);
         doc.line(prev.x, prev.y, pt.x, pt.y);
         prev = pt;
       }
@@ -1517,8 +1531,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
       // each ring: its own inner/outer boundary arcs across this piece's
       // span, plus its own division lines wherever they land within it --
-      // rings deliberately don't align with each other or the page seams
-      layout.forEach((ring, ri) => {
+      // rings deliberately don't align with each other or the page seams.
+      // No text is drawn inside a ring's band -- only the arcs and division
+      // lines that define its edges, so nothing can ever sit on a cut line.
+      layout.forEach(ring => {
         doc.setLineWidth(0.25);
         [ring.innerR, ring.outerR].forEach(rad => {
           if (rad<=0) return;
@@ -1538,10 +1554,6 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
           const p1 = pagePt(ring.innerR, ang), p2 = pagePt(ring.outerR, ang);
           doc.line(p1.x, p1.y, p2.x, p2.y);
         }
-
-        doc.setFontSize(6.5);
-        const labelPt = pagePt((ring.innerR+ring.outerR)/2, Math.min(pageSpanDeg, 4));
-        doc.text(`ring ${ri+1} · ${ring.divisions}`, labelPt.x, labelPt.y);
       });
 
       // seam registration marks between neighbouring pieces
@@ -1558,7 +1570,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
             const perp = polar(tickHalfLenMM, edge.angle+90);
             doc.line(base.x-perp.x, base.y-perp.y, base.x+perp.x, base.y+perp.y);
           });
-          const labelBase = polar(R*0.9, edge.angle);
+          const labelBase = polar(outerContentR*0.9, edge.angle);
           const labelPerp = polar(5, edge.angle+90);
           const labelPtOuter = toPage(labelBase.x + edge.inwardSign*labelPerp.x, labelBase.y + edge.inwardSign*labelPerp.y);
           doc.setFontSize(7);
@@ -1566,22 +1578,27 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
         });
       }
 
+      // page-margin label, outside all disc geometry -- the one place ring
+      // identification text can sit without any risk of touching a cut line
       doc.setFontSize(9);
-      doc.text(`piece ${p+1} of ${P} — align vertex to disc centre`, margin, margin - 2 < 4 ? 6 : margin - 2);
+      doc.text(`piece ${p+1} of ${P} — align vertex to disc centre — rings (hub→rim): ${ringSummary} div`, margin, margin - 2 < 4 ? 6 : margin - 2);
     }
 
     doc.save('phenakistoscope-blank-template.pdf');
     statusEl.className='status';
-    statusEl.textContent = `Done — ${P} page${P>1?'s':''}, ${layout.length} ring${layout.length===1?'':'s'} (${layout.map(r=>r.divisions).join('/')} divisions), ${diameter}mm disc, ${opt.value} ${useLandscape?'landscape':'portrait'}, saved as phenakistoscope-blank-template.pdf`;
+    statusEl.textContent = `Done — ${P} page${P>1?'s':''}, ${layout.length} ring${layout.length===1?'':'s'} (${ringSummary} divisions), ${(outerContentR*2).toFixed(1)}mm template, ${opt.value} ${useLandscape?'landscape':'portrait'}, saved as phenakistoscope-blank-template.pdf`;
 
-    let planText = `ASSEMBLY\n${P>1 ? `Each page is one piece spanning ${pageSpanDeg.toFixed(1)}° of the disc — cut along the vertex/radii/arc lines. Seam ticks and "piece N" labels on the two straight edges of each page show which pieces glue together, and at what radius.` : `The whole disc is one piece on a single page — cut along the vertex/radii/arc lines. No gluing needed.`} Each piece is ${bbox.w.toFixed(0)}×${bbox.h.toFixed(0)}mm on the page, comfortably within ${opt.value}. Arrange all ${P} piece${P>1?'s':''} around a shared centre point, matching each vertex to that centre.\n\nRings, hub to rim: ${layout.map((r,i)=>`ring ${i+1} — ${r.divisions} divisions, ${r.innerR.toFixed(0)}–${r.outerR.toFixed(0)}mm`).join('; ')}.`;
+    let planText = `ASSEMBLY\n${P>1 ? `Each page is one piece spanning ${pageSpanDeg.toFixed(1)}° of the template — cut along the vertex/radii/arc lines. Seam ticks and "piece N" labels on the two straight edges of each page show which pieces glue together, and at what radius.` : `The whole template is one piece on a single page — cut along the vertex/radii/arc lines. No gluing needed.`} Each piece is ${bbox.w.toFixed(0)}×${bbox.h.toFixed(0)}mm on the page, comfortably within ${opt.value}. Arrange all ${P} piece${P>1?'s':''} around a shared centre point, matching each vertex to that centre.\n\nRings, hub to rim: ${layout.map((r,i)=>`ring ${i+1} — ${r.divisions} divisions, ${r.innerR.toFixed(0)}–${r.outerR.toFixed(0)}mm`).join('; ')}.`;
+    if (!truncated && outerContentR < R - 1e-6){
+      planText += `\n\nThe template is cropped to your ring content — ${(outerContentR*2).toFixed(0)}mm across, hub to outermost ring edge — not the full ${diameter}mm disc diameter you set. Add rings, widen them, or reduce the diameter if you want the two to match.`;
+    }
     if (P > 1){
-      // a whole flat circle needs both paper dimensions >= its diameter --
-      // no margin/orientation trick gets a disc bigger than the paper's
-      // short edge down to one piece, so only suggest sizes that actually work
-      const fits = singlePiecePaperOptions(R, margin).filter(v => v !== opt.value);
+      // a whole flat piece needs both paper dimensions >= its own extent --
+      // no margin/orientation trick gets that down to one piece, so only
+      // suggest sizes that actually work
+      const fits = singlePiecePaperOptions(outerContentR, margin).filter(v => v !== opt.value);
       if (fits.length){
-        planText += `\n\nThis disc (${(R*2).toFixed(0)}mm across) needs a paper size at least that wide in both directions to print as a single uncut piece — ${opt.value} isn't quite big enough. It would fit as one piece on: ${fits.join(', ')}.`;
+        planText += `\n\nThis template (${(outerContentR*2).toFixed(0)}mm across) needs a paper size at least that wide in both directions to print as a single uncut piece — ${opt.value} isn't quite big enough. It would fit as one piece on: ${fits.join(', ')}.`;
       }
     }
     if (truncated){
