@@ -804,7 +804,10 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       const Npreview2 = Math.max(3, parseInt(divisionsInput.value)||12);
       const frameStepPreview = 360/Npreview2;
       const halfStepRad = (frameStepPreview*Math.PI/180)/2;
-      const outerR_cell = midR + thumbMM/2, innerR_cell = midR - thumbMM/2;
+      // capped to R: a wide image / high ring position can otherwise place
+      // this cell's outer edge past the disc's own cut edge -- match the PDF
+      // path (same cap, same reason) so this calibration preview stays WYSIWYG
+      const outerR_cell = Math.min(midR + thumbMM/2, R), innerR_cell = midR - thumbMM/2;
       const outerWmm = 2*outerR_cell*Math.sin(halfStepRad);
       const innerWmm = 2*Math.max(0,innerR_cell)*Math.sin(halfStepRad);
       const outerWpx = outerWmm*scale, innerWpx = innerWmm*scale;
@@ -905,7 +908,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     fdctx.setLineDash([]);
 
     const halfStepRad = (frameAngleStep*Math.PI/180)/2;
-    const outerR_cell = midR + thumbMM/2, innerR_cell = midR - thumbMM/2;
+    // capped to R -- see note at drawWedgePreview's version of this line
+    const outerR_cell = Math.min(midR + thumbMM/2, R), innerR_cell = midR - thumbMM/2;
     const outerWmm = 2*outerR_cell*Math.sin(halfStepRad);
     const innerWmm = 2*Math.max(0,innerR_cell)*Math.sin(halfStepRad);
     const outerWpx = outerWmm*scale, innerWpx = innerWmm*scale;
@@ -999,7 +1003,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     function toCanvas(mmX, mmY){ return { x: cx + mmX*scale, y: cy - mmY*scale }; }
 
     const halfStepRad = (frameAngleStep*Math.PI/180)/2;
-    const outerR_cell = midR + thumbMM/2, innerR_cell = midR - thumbMM/2;
+    // capped to R -- see note at drawWedgePreview's version of this line
+    const outerR_cell = Math.min(midR + thumbMM/2, R), innerR_cell = midR - thumbMM/2;
     const outerWmm = 2*outerR_cell*Math.sin(halfStepRad);
     const innerWmm = 2*Math.max(0,innerR_cell)*Math.sin(halfStepRad);
     const outerWpx = outerWmm*scale, innerWpx = innerWmm*scale, thumbPx = thumbMM*scale;
@@ -1113,11 +1118,21 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   // pick the largest number of frames that can share one printed page (fewest
   // pages/cuts overall), only ever grouping evenly -- every printed piece ends
   // up the same shape and size, never a mismatched leftover on the last page
-  function chooseGrouping(N, frameAngleStep, R, midR, diagMm, paperWmm, paperHmm, margin){
+  function chooseGrouping(N, frameAngleStep, R, midR, diagMm, paperWmm, paperHmm, margin, borderOn){
     const uw = paperWmm - 2*margin, uh = paperHmm - 2*margin;
     function groupBbox(framesPerPage){
       let bbox = wedgeBBox(frameAngleStep*framesPerPage, R);
-      for (let j=0;j<framesPerPage;j++){
+      // the raster square placed per frame is deliberately oversized (its side
+      // is a diagonal, sized to fully cover the rotated wedge mask at any
+      // rotation) so its own corners routinely poke out past R -- but with
+      // masking on, those corners are transparent: the actually-visible pixels
+      // are clipped to the wedge (outerR_cell is itself capped to R, see its
+      // definition), a shape already inside wedgeBBox(...,R) above. Unioning
+      // the raw square's invisible overshoot in would force pagination
+      // decisions around paper-scrap nobody sees, splitting a piece across
+      // extra pages for no visible reason. Only count it when there's no
+      // mask, i.e. the whole square really is opaque, printed content.
+      if (!borderOn) for (let j=0;j<framesPerPage;j++){
         const c = polar(midR, frameAngleStep/2 + j*frameAngleStep);
         const ib = { minX:c.x-diagMm/2, maxX:c.x+diagMm/2, minY:c.y-diagMm/2, maxY:c.y+diagMm/2 };
         bbox = { minX:Math.min(bbox.minX,ib.minX), maxX:Math.max(bbox.maxX,ib.maxX),
@@ -1267,10 +1282,16 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   const ringWarn = document.getElementById('ringWarning');
   const MIN_RING_DIVISIONS = 8; // below this a phenakistoscope ring doesn't read correctly when spun
 
+  // widths are percentages of the available band (hub to disc rim), not
+  // absolute mm -- that way the same ring proportions hold at any diameter,
+  // instead of a fixed-mm width covering a shrinking fraction of the radius
+  // as the disc gets bigger (which is what made the ring content shrink to
+  // a fraction of the page on large discs). Defaults sum to 100% so the
+  // three default rings fill the disc edge-to-edge out of the box.
   let rings = [
-    { divisions: 16, width: 20 },
-    { divisions: 14, width: 20 },
-    { divisions: 13, width: 20 }
+    { divisions: 16, widthPct: 33.34 },
+    { divisions: 14, widthPct: 33.33 },
+    { divisions: 13, widthPct: 33.33 }
   ];
 
   function renderRingRows(){
@@ -1281,8 +1302,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
           <input type="number" class="ring-divisions" data-idx="${i}" value="${r.divisions}" min="${MIN_RING_DIVISIONS}" step="1">
         </div>
         <div class="field">
-          <label>Ring ${i+1} — width (mm)</label>
-          <input type="number" class="ring-width" data-idx="${i}" value="${r.width}" min="1" step="1">
+          <label>Ring ${i+1} — width (% of hub→rim)</label>
+          <input type="number" class="ring-width" data-idx="${i}" value="${r.widthPct}" min="0.1" max="100" step="0.5">
         </div>
         <div class="field" style="flex:0 0 auto; display:flex; align-items:flex-end;">
           <button type="button" class="removeRing" data-idx="${i}" ${rings.length<=1?'disabled':''} style="padding:8px 12px; background:#fff; border:1px solid var(--line); border-radius:2px; cursor:${rings.length<=1?'default':'pointer'};">Remove</button>
@@ -1299,7 +1320,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     });
     ringRowsEl.querySelectorAll('.ring-width').forEach(el => {
       el.addEventListener('input', () => {
-        rings[parseInt(el.dataset.idx)].width = Math.max(1, parseFloat(el.value)||1);
+        rings[parseInt(el.dataset.idx)].widthPct = Math.min(100, Math.max(0.1, parseFloat(el.value)||0.1));
         updateRingWarning();
         redrawBlankPreviewIfLive();
       });
@@ -1317,7 +1338,7 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
   document.getElementById('addRing').addEventListener('click', () => {
     const last = rings[rings.length-1];
-    rings.push({ divisions: last ? last.divisions : 16, width: last ? last.width : 20 });
+    rings.push({ divisions: last ? last.divisions : 16, widthPct: last ? last.widthPct : 33.33 });
     renderRingRows();
     updateRingWarning();
     redrawBlankPreviewIfLive();
@@ -1327,12 +1348,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   // that would overshoot the disc radius rather than drawing past the cut edge
   function ringLayout(R){
     const hubR = R*0.14;
+    const availableR = Math.max(0, R - hubR); // hub-to-rim band that ring widthPct is relative to
     let cursor = hubR, truncated = false;
     const layout = [];
     for (const r of rings){
       if (cursor >= R){ truncated = true; break; }
       const innerR = cursor;
-      let outerR = cursor + r.width;
+      let outerR = cursor + (r.widthPct/100)*availableR;
       if (outerR > R){ outerR = R; truncated = true; }
       layout.push({ innerR, outerR, divisions: Math.max(MIN_RING_DIVISIONS, r.divisions|0) });
       cursor = outerR;
@@ -1488,7 +1510,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     }
     const { pieceCount: P, spanDeg: pageSpanDeg, bbox, useLandscape } = grouping;
 
-    const vx = margin + 6 - bbox.minX, vy = margin + 6 - bbox.minY;
+    // centre the piece on the actual printed page (swap w/h for landscape),
+    // not just offset it from the top-left corner -- the piece already fits
+    // within paperW-2*margin/paperH-2*margin (chooseBlankGrouping guarantees
+    // that), so centring on the full page still clears the margin on every
+    // side and avoids leaving all the slack paper on one side
+    const pageWmm = useLandscape ? paperH : paperW, pageHmm = useLandscape ? paperW : paperH;
+    const vx = (pageWmm - bbox.w)/2 - bbox.minX, vy = (pageHmm - bbox.h)/2 - bbox.minY;
     function toPage(localX, localY){ return { x: vx + localX, y: vy + localY }; }
     function pagePt(r, deg){ return toPage(...Object.values(polar(r, deg))); }
 
@@ -1670,6 +1698,8 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     const opt = paperSel.options[paperSel.selectedIndex];
     const paperW = parseFloat(opt.dataset.w), paperH = parseFloat(opt.dataset.h);
     const margin = parseFloat(marginInput.value) || 0;
+    // ring widths are now percentages of the hub-to-rim band, so they scale
+    // with whatever diameter gets set here -- no per-mode special-casing needed
     diamInput.value = maxSinglePieceDiameter(paperW, paperH, margin).toFixed(1);
     diamInput.dispatchEvent(new Event('input'));
   });
@@ -1715,14 +1745,18 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       // wider than its radial height) -- the true content area is the union
       // of the wedge outline and this rectangle, not the wedge or a square alone
       const halfStepRad = (frameAngleStep*Math.PI/180)/2;
-      const outerR_cell = midR + thumbMM/2, innerR_cell = midR - thumbMM/2;
+      // capped to R: a wide image / high ring position can otherwise place
+      // this cell's outer edge past the disc's own cut edge -- with masking
+      // on that pushes the visible mask boundary itself past the printed cut
+      // arc, so trimming the disc out would unexpectedly clip the photo too
+      const outerR_cell = Math.min(midR + thumbMM/2, R), innerR_cell = midR - thumbMM/2;
       const outerWmm = 2*outerR_cell*Math.sin(halfStepRad);
       const innerWmm = 2*Math.max(0,innerR_cell)*Math.sin(halfStepRad);
       const diagMm = Math.sqrt(Math.pow(Math.max(outerWmm,innerWmm),2) + Math.pow(thumbMM,2));
 
       // pack as many frames as will cleanly divide N onto one page as fit --
       // fewer pages means fewer pieces to cut and glue
-      const grouping = chooseGrouping(N, frameAngleStep, R, midR, diagMm, paperW, paperH, margin);
+      const grouping = chooseGrouping(N, frameAngleStep, R, midR, diagMm, paperW, paperH, margin, borderOn);
       if (!grouping){
         statusEl.className='status err';
         statusEl.textContent = `Even a single frame's own wedge doesn't fit ${opt.value}. Choose a larger paper size, reduce image size, or reduce the diameter/divisions.`;
@@ -1745,8 +1779,14 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
       // vertex offset accounts for however far bbox.minX/minY sit below zero
       // (e.g. the image square overflowing past the vertex) -- content never
-      // goes off-page regardless of image size / ring radius settings
-      const vx = margin + 6 - bbox.minX, vy = margin + 6 - bbox.minY;
+      // goes off-page regardless of image size / ring radius settings.
+      // Centre the piece on the actual printed page (swap w/h for landscape)
+      // rather than anchoring it to the top-left corner -- the piece already
+      // fits within paperW-2*margin/paperH-2*margin (chooseGrouping
+      // guarantees that), so centring still clears the margin on every side
+      // instead of dumping all the slack paper on one side.
+      const pageWmm = useLandscape ? paperH : paperW, pageHmm = useLandscape ? paperW : paperH;
+      const vx = (pageWmm - bbox.w)/2 - bbox.minX, vy = (pageHmm - bbox.h)/2 - bbox.minY;
       function toPage(localX, localY){ return { x: vx + localX, y: vy + localY }; }
       function pagePt(r, deg){ return toPage(...Object.values(polar(r, deg))); }
 
@@ -1889,6 +1929,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
       let planText = `ASSEMBLY\n${P>1 ? `Each page is one piece spanning ${framesPerPage} frame${framesPerPage>1?'s':''} — cut along the vertex/radii/arc lines. Seam ticks and "piece N" labels on the two straight edges of each page show which pieces glue together, and at what radius.` : `The whole disc is one piece on a single page — cut along the vertex/radii/arc lines. No gluing needed.`} Each piece is ${bbox.w.toFixed(0)}×${bbox.h.toFixed(0)}mm on the page, comfortably within ${opt.value}. ` +
         `Arrange all ${P} piece${P>1?'s':''} in order around a shared centre point, matching each vertex to that centre — use the full disc preview above as your assembly map for the correct order and spacing.\n`;
+      if (borderOn && midR + thumbMM/2 > R){
+        planText += `\nNOTE: image size/ring radius would place the masked image past the disc's own edge — it's been cropped to the disc's outer radius (Ø${diameter}mm) rather than overhanging it. Reduce image size or ring radius to keep the full image within the disc.`;
+        planEl.classList.add('warn');
+        statusEl.className='status warn';
+      }
       if (!borderOn){
         const angularWidthDeg = 2*Math.atan((thumbMM/2)/midR)*180/Math.PI;
         if (angularWidthDeg > frameAngleStep*0.95){
